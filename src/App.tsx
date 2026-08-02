@@ -57,6 +57,7 @@ async function writeAndConfirm(path: string): Promise<boolean> {
     // fragments follow the project: loose workspace folders move next to
     // the .kadr file (first save, save-as to a new place)
     void syncProjectFragments(s.project, path)
+    return true
   } catch (err) {
     flashSave('saveError', String(err), true)
     return false

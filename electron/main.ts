@@ -69,6 +69,14 @@ process.on('uncaughtException', (err) => {
 let win: BrowserWindow | null = null
 /** window.open name of the detached preview — see src/engine/popout.ts */
 const PREVIEW_WIN = 'kadr-preview'
+let allowWindowClose = false
+let closeCheckPending = false
+
+function closeWindowAfterDecision() {
+  closeCheckPending = false
+  allowWindowClose = true
+  win?.close()
+}
 
 function createWindow() {
   win = new BrowserWindow({
@@ -553,6 +561,35 @@ async function rememberDir(kind: string, filePath: string) {
 }
 
 function registerIpc() {
+  ipcMain.on('app:close-state', (event, dirty: boolean) => {
+    if (event.sender !== win?.webContents || !closeCheckPending) return
+    if (!dirty) {
+      closeWindowAfterDecision()
+      return
+    }
+    void dialog.showMessageBox(win!, {
+      type: 'warning',
+      title: 'Несохранённые изменения',
+      message: 'В проекте есть несохранённые изменения.',
+      detail: 'Автосохранение — это резервная копия. Сохранить проект перед закрытием?',
+      buttons: ['Сохранить', 'Не сохранять', 'Отмена'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true
+    }).then(({ response }) => {
+      if (!closeCheckPending || !win || win.isDestroyed()) return
+      if (response === 0) win.webContents.send('app:save-before-close')
+      else if (response === 1) closeWindowAfterDecision()
+      else closeCheckPending = false
+    }).catch(() => { closeCheckPending = false })
+  })
+
+  ipcMain.on('app:save-before-close-result', (event, ok: boolean) => {
+    if (event.sender !== win?.webContents || !closeCheckPending) return
+    if (ok) closeWindowAfterDecision()
+    else closeCheckPending = false
+  })
+
   ipcMain.handle('proxy:request', (_e, srcPath: string, duration: number,
     opts?: { alpha?: boolean; codec?: string }) =>
     requestProxy(srcPath, duration, opts)
