@@ -370,11 +370,10 @@ async function ensureServer(): Promise<{ url: string }> {
     const timer = setTimeout(() => reject(new Error('vite start timeout: ' + out.slice(-400))), 30000)
     const onData = (c: Buffer) => {
       out += c
-      // vite's banner carries ANSI colors that split the port digits
-      // ("http://127.0.0.1:\x1b[1m5621") — strip them before matching, or a
-      // cold start never resolves and every first fragment use flakes
-      const clean = out.replace(/\x1b\[[0-9;]*m/g, '')
-      const m = clean.match(/(http:\/\/127\.0\.0\.1:\d+)/)
+      // Vite colorizes the URL on Windows, sometimes inserting ANSI escapes
+      // inside the port number; strip them before looking for the ready URL.
+      const clean = out.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+      const m = clean.match(/(https?:\/\/127\.0\.0\.1:\d+)/)
       if (m) {
         clearTimeout(timer)
         resolve(m[1])
@@ -573,9 +572,11 @@ async function renderFragment(
     } catch { /* still missing */ }
     try {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn('npx', args, {
+        const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx'
+        const child = spawn(npxCommand, args, {
           cwd: WORKSPACE,
           env: { ...process.env, ...extraEnv },
+          shell: process.platform === 'win32',
           stdio: ['ignore', 'pipe', 'pipe']
         })
         let all = ''
