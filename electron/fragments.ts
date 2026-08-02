@@ -279,9 +279,11 @@ async function ensureWorkspace(
     onProgress?.('install', 0)
     const extraEnv = await netEnv()
     await new Promise<void>((resolve, reject) => {
-      const child = spawn('npm', ['install', '--no-audit', '--no-fund'], {
+      const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+      const child = spawn(npmCommand, ['install', '--no-audit', '--no-fund'], {
         cwd: WORKSPACE,
         env: { ...process.env, ...extraEnv },
+        shell: process.platform === 'win32',
         stdio: ['ignore', 'pipe', 'pipe']
       })
       let err = ''
@@ -328,21 +330,32 @@ async function ensureServer(): Promise<{ url: string }> {
   // inherit Electron's listening sockets and would block the next launch.
   // The bin runs directly (NOT via npx — npx makes vite a grandchild the
   // watchdog's kill couldn't reach).
-  const child = spawn('sh', ['-c',
-    `"./node_modules/.bin/vite" --port ${VITE_PORT} --strictPort & V=$!; ` +
-    `(while kill -0 ${process.pid} 2>/dev/null; do sleep 3; done; kill $V 2>/dev/null) & ` +
-    'wait $V'
-  ], {
-    cwd: WORKSPACE,
-    env: { ...process.env },
-    stdio: ['ignore', 'pipe', 'pipe']
-  })
+  const viteArgs = ['--port', String(VITE_PORT), '--strictPort']
+  const child = process.platform === 'win32'
+    ? spawn(join(WORKSPACE, 'node_modules', '.bin', 'vite.cmd'), viteArgs, {
+      cwd: WORKSPACE,
+      env: { ...process.env },
+      shell: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    : spawn('sh', ['-c',
+      `"./node_modules/.bin/vite" --port ${VITE_PORT} --strictPort & V=$!; ` +
+      `(while kill -0 ${process.pid} 2>/dev/null; do sleep 3; done; kill $V 2>/dev/null) & ` +
+      'wait $V'
+    ], {
+      cwd: WORKSPACE,
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
   const url = await new Promise<string>((resolve, reject) => {
     let out = ''
     const timer = setTimeout(() => reject(new Error('vite start timeout: ' + out.slice(-400))), 30000)
     const onData = (c: Buffer) => {
       out += c
-      const m = out.match(/(http:\/\/127\.0\.0\.1:\d+)/)
+      // Vite colorizes the URL on Windows, sometimes inserting ANSI escapes
+      // inside the port number; strip them before looking for the ready URL.
+      const clean = out.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+      const m = clean.match(/(https?:\/\/127\.0\.0\.1:\d+)/)
       if (m) {
         clearTimeout(timer)
         resolve(m[1])
@@ -445,9 +458,11 @@ async function renderFragment(
 
   const extraEnv = await netEnv()
   const job = renderChain.then(() => new Promise<void>((resolve, reject) => {
-    const child = spawn('npx', args, {
+    const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx'
+    const child = spawn(npxCommand, args, {
       cwd: WORKSPACE,
       env: { ...process.env, ...extraEnv },
+      shell: process.platform === 'win32',
       stdio: ['ignore', 'pipe', 'pipe']
     })
     let all = ''

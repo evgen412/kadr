@@ -20,6 +20,13 @@ import json
 import os
 import sys
 
+# Windows may use cp1251 for a redirected Python stdout. Kadr reads the
+# NDJSON stream as UTF-8, so force both streams to a stable encoding.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="strict")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 def emit(obj):
     sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")

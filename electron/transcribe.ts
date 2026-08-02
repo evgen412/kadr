@@ -4,7 +4,7 @@
 // text to the renderer. One job at a time.
 import { app, ipcMain, BrowserWindow } from 'electron'
 import { spawn, ChildProcess } from 'child_process'
-import { promises as fs } from 'fs'
+import { promises as fs, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { ExportMuxer } from './ffmpeg'
@@ -47,14 +47,25 @@ async function run(win: BrowserWindow, req: TranscribeRequest): Promise<Transcri
     const segments: TranscribeSegment[] = []
     let language = req.language
     let liveText = ''
+    send(0.02, `Загрузка модели ${req.model} (первый запуск может занять несколько минут)…`)
     await new Promise<void>((resolve, reject) => {
-      const py = spawn('python3', [
+      // On Windows, `python3` may resolve to the Microsoft Store app alias.
+      // The launcher provides KADR_PYTHON so transcription uses the real interpreter.
+      const localPython = process.platform === 'win32'
+        ? join(process.env.LOCALAPPDATA || '', 'Programs', 'Python', 'Python312', 'python.exe')
+        : ''
+      const pyCommand = process.env.KADR_PYTHON ||
+        (localPython && existsSync(localPython) ? localPython : (process.platform === 'win32' ? 'python.exe' : 'python3'))
+      const py = spawn(pyCommand, [
         join(app.getAppPath(), 'scripts', 'transcribe.py'),
         '--audio', wav,
         '--model', req.model,
         '--language', req.language,
         '--duration', String(req.duration)
-      ], { stdio: ['ignore', 'pipe', 'pipe'] })
+      ], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
+      })
       job.py = py
       let buf = ''
       let err = ''

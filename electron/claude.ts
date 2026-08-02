@@ -4,7 +4,7 @@
 // (mcp-bridge.cjs, spawned by claude itself) talks to.
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { createServer, type Server } from 'http'
-import { execFile } from 'child_process'
+import { execFile, spawn as spawnProcess } from 'child_process'
 import { promises as fs } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -157,6 +157,13 @@ function startBridge(win: BrowserWindow): Promise<{ server: Server; port: number
 
 function which(cmd: string): Promise<string | null> {
   return new Promise((resolve) => {
+    if (process.platform === 'win32') {
+      const query = cmd.toLowerCase() === 'claude' ? 'claude.cmd' : cmd
+      execFile('where.exe', [query], (err, stdout) => {
+        resolve(err ? null : stdout.split(/\r?\n/)[0]?.trim() || null)
+      })
+      return
+    }
     execFile('/bin/sh', ['-c', `command -v ${cmd}`], (err, stdout) => {
       resolve(err ? null : stdout.trim() || null)
     })
@@ -187,7 +194,12 @@ async function openSession(
   if (session) closeSession()
   const cfg = await userConfig()
   const cmdName = process.env.KADR_CLAUDE_CMD || cfg.command || 'claude'
-  const bin = (await which(cmdName)) ?? cmdName
+  const found = (await which(cmdName)) ?? cmdName
+  // `where claude` can prefer the extensionless Unix shim installed by npm.
+  // Windows cmd.exe executes the .cmd launcher instead.
+  const bin = process.platform === 'win32' && cmdName.toLowerCase() === 'claude'
+    ? 'claude.cmd'
+    : found
 
   let bridge: { server: Server; port: number }
   try {
@@ -232,16 +244,32 @@ async function openSession(
     // process group if this Electron process dies hard — otherwise a busy
     // claude tree survives holding inherited Chromium sockets (CDP port)
     // and blocks the next launch.
-    const wrapper =
-      `(while kill -0 ${process.pid} 2>/dev/null; do sleep 3; done; ` +
-      `kill -HUP -$$ 2>/dev/null; sleep 2; kill -9 -$$ 2>/dev/null) & exec "$0" "$@"`
-    const p = pty.spawn('/bin/bash', ['-c', wrapper, bin, ...args], {
+    const p = process.platform === 'win32'
+      ? pty.spawn(process.env.ComSpec || 'cmd.exe', [
+        '/d', '/s', '/c',
+        [bin, ...args].map((arg) => {
+          const value = String(arg)
+          return /[\s"]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value
+        }).join(' ')
+      ], {
+        name: 'xterm-256color',
+        cols: Math.max(20, cols),
+        rows: Math.max(5, rows),
+        cwd: dir,
+        env: { ...process.env, ...cfg.env } as Record<string, string>
+      })
+      : pty.spawn('/bin/bash', [
+        '-c',
+        `(while kill -0 ${process.pid} 2>/dev/null; do sleep 3; done; ` +
+        `kill -HUP -$$ 2>/dev/null; sleep 2; kill -9 -$$ 2>/dev/null) & exec "$0" "$@"`,
+        bin, ...args
+      ], {
       name: 'xterm-256color',
       cols: Math.max(20, cols),
       rows: Math.max(5, rows),
       cwd: dir,
       env: { ...process.env, ...cfg.env } as Record<string, string>
-    })
+      })
     p.onData((data) => win.webContents.send('claude:data', data))
     p.onExit(({ exitCode }) => {
       // only announce deaths of the CURRENT session: deliberate closes
@@ -267,7 +295,11 @@ function closeSession() {
   // HUP the whole process group (claude + its MCP server children), then
   // escalate: a busy tree that shrugs off SIGHUP must not outlive the panel
   const pid = s.pty.pid
-  try { process.kill(-pid, 'SIGHUP') } catch { try { s.pty.kill() } catch { /* dead */ } }
+  if (process.platform === 'win32') {
+    spawnProcess('taskkill.exe', ['/PID', String(pid), '/T', '/F'])
+  } else {
+    try { process.kill(-pid, 'SIGHUP') } catch { try { s.pty.kill() } catch { /* dead */ } }
+  }
   setTimeout(() => {
     try { process.kill(-pid, 'SIGKILL') } catch { /* already gone */ }
   }, 1500)
