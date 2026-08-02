@@ -136,6 +136,7 @@ export default function App() {
     Math.min(Number(localStorage.getItem('kadr.tlh')) || 330, window.innerHeight - 220)
   )
   const [claudeOpen, setClaudeOpen] = useState(false)
+  const [closePromptOpen, setClosePromptOpen] = useState(false)
   const [debugOpen, setDebugOpen] = useState(false)
   const [storageOpen, setStorageOpen] = useState(false)
   const popWin = usePopout((s) => s.win)
@@ -394,6 +395,70 @@ export default function App() {
       <TtsSettingsDialog />
       <SpeakDialog />
       <DefectsDialog />
+      {closePromptOpen && (
+        <div
+          className="modal-back close-confirm-back"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="close-confirm-title"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              setClosePromptOpen(false)
+              window.kadr.respondClosePrompt('cancel')
+            }
+          }}
+        >
+          <div className="modal close-confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="close-confirm-head">
+              <span className="close-confirm-icon" aria-hidden="true">!</span>
+              <div>
+                <h2 id="close-confirm-title">Несохранённые изменения</h2>
+                <p>В проекте есть изменения, которые ещё не записаны в файл.</p>
+              </div>
+              <button
+                className="close-confirm-x"
+                aria-label="Отмена"
+                onClick={() => {
+                  setClosePromptOpen(false)
+                  window.kadr.respondClosePrompt('cancel')
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <p className="close-confirm-note">
+              Автосохранение — это резервная копия. Сохранить проект перед закрытием?
+            </p>
+            <div className="modal-actions close-confirm-actions">
+              <button
+                className="primary"
+                onClick={() => {
+                  setClosePromptOpen(false)
+                  window.kadr.respondClosePrompt('save')
+                }}
+              >
+                Сохранить
+              </button>
+              <button
+                onClick={() => {
+                  setClosePromptOpen(false)
+                  window.kadr.respondClosePrompt('discard')
+                }}
+              >
+                Не сохранять
+              </button>
+              <button
+                onClick={() => {
+                  setClosePromptOpen(false)
+                  window.kadr.respondClosePrompt('cancel')
+                }}
+              >
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {claudeOpen && <ClaudePanel onClose={() => setClaudeOpen(false)} />}
       {debugOpen && <DebugPanel onClose={() => setDebugOpen(false)} />}
       {storageOpen && <StoragePanel onClose={() => setStorageOpen(false)} />}
