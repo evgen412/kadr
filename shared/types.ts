@@ -395,6 +395,8 @@ export interface KadrApi {
   /** Ask the renderer whether the project has unsaved changes before closing. */
   onCloseRequest(cb: () => void): () => void
   reportCloseState(dirty: boolean): void
+  onClosePrompt(cb: () => void): () => void
+  respondClosePrompt(action: 'save' | 'discard' | 'cancel'): void
   /** Ask the renderer to save, then close the window. */
   onSaveBeforeCloseRequest(cb: () => void): () => void
   reportSaveBeforeClose(ok: boolean): void

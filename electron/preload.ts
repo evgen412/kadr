@@ -89,6 +89,12 @@ const api: KadrApi = {
     return () => ipcRenderer.removeListener('app:close-query', handler)
   },
   reportCloseState: (dirty) => ipcRenderer.send('app:close-state', dirty),
+  onClosePrompt: (cb) => {
+    const handler = () => cb()
+    ipcRenderer.on('app:show-close-prompt', handler)
+    return () => ipcRenderer.removeListener('app:show-close-prompt', handler)
+  },
+  respondClosePrompt: (action) => ipcRenderer.send('app:close-prompt-result', action),
   onSaveBeforeCloseRequest: (cb) => {
     const handler = () => cb()
     ipcRenderer.on('app:save-before-close', handler)

@@ -413,21 +413,14 @@ function registerIpc() {
       closeWindowAfterDecision()
       return
     }
-    void dialog.showMessageBox(win!, {
-      type: 'warning',
-      title: 'Несохранённые изменения',
-      message: 'В проекте есть несохранённые изменения.',
-      detail: 'Автосохранение — это резервная копия. Сохранить проект перед закрытием?',
-      buttons: ['Сохранить', 'Не сохранять', 'Отмена'],
-      defaultId: 0,
-      cancelId: 2,
-      noLink: true
-    }).then(({ response }) => {
-      if (!closeCheckPending || !win || win.isDestroyed()) return
-      if (response === 0) win.webContents.send('app:save-before-close')
-      else if (response === 1) closeWindowAfterDecision()
-      else closeCheckPending = false
-    }).catch(() => { closeCheckPending = false })
+    win?.webContents.send('app:show-close-prompt')
+  })
+
+  ipcMain.on('app:close-prompt-result', (event, action: string) => {
+    if (event.sender !== win?.webContents || !closeCheckPending) return
+    if (action === 'save') win?.webContents.send('app:save-before-close')
+    else if (action === 'discard') closeWindowAfterDecision()
+    else closeCheckPending = false
   })
 
   ipcMain.on('app:save-before-close-result', (event, ok: boolean) => {
