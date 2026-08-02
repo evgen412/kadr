@@ -392,6 +392,12 @@ export interface KadrApi {
   writeProject(path: string, project: Project): Promise<void>
   /** write <name>.autosave.kadr next to the project (atomic); returns path */
   autosaveProject(project: Project, mainPath: string | null): Promise<string>
+  /** Ask the renderer whether the project has unsaved changes before closing. */
+  onCloseRequest(cb: () => void): () => void
+  reportCloseState(dirty: boolean): void
+  /** Ask the renderer to save, then close the window. */
+  onSaveBeforeCloseRequest(cb: () => void): () => void
+  reportSaveBeforeClose(ok: boolean): void
 
   /** App-wide JSON stores in userData (presets etc.) — survive any restart. */
   readUserStore(name: string): Promise<unknown>

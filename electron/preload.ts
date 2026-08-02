@@ -83,6 +83,18 @@ const api: KadrApi = {
   readProject: (path) => ipcRenderer.invoke('project:read', path),
   writeProject: (path, project) => ipcRenderer.invoke('project:write', path, project),
   autosaveProject: (project, mainPath) => ipcRenderer.invoke('project:autosave', project, mainPath),
+  onCloseRequest: (cb) => {
+    const handler = () => cb()
+    ipcRenderer.on('app:close-query', handler)
+    return () => ipcRenderer.removeListener('app:close-query', handler)
+  },
+  reportCloseState: (dirty) => ipcRenderer.send('app:close-state', dirty),
+  onSaveBeforeCloseRequest: (cb) => {
+    const handler = () => cb()
+    ipcRenderer.on('app:save-before-close', handler)
+    return () => ipcRenderer.removeListener('app:save-before-close', handler)
+  },
+  reportSaveBeforeClose: (ok) => ipcRenderer.send('app:save-before-close-result', ok),
 
   readUserStore: (name) => ipcRenderer.invoke('store:read', name),
   writeUserStore: (name, data) => ipcRenderer.invoke('store:write', name, data),

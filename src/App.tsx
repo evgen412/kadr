@@ -34,34 +34,36 @@ export function markProjectSaved(p: Project) {
   useSaveUi.setState({ savedProject: p })
 }
 
-async function writeAndConfirm(path: string) {
+async function writeAndConfirm(path: string): Promise<boolean> {
   const s = useEditor.getState()
   try {
     await window.kadr.writeProject(path, s.project)
     s.setProjectPath(path)
     markProjectSaved(s.project)
     flashSave('saved', baseOf(path))
+    return true
   } catch (err) {
     flashSave('saveError', String(err), true)
+    return false
   }
 }
 
-async function saveProject() {
+async function saveProject(): Promise<boolean> {
   const s = useEditor.getState()
   let path = s.projectPath
   if (!path) {
     path = await window.kadr.saveProjectDialog(s.project.name)
-    if (!path) return
+    if (!path) return false
   }
-  await writeAndConfirm(path)
+  return writeAndConfirm(path)
 }
 
 /** Always ask for a (new) location; the project lives there from now on. */
-async function saveProjectAs() {
+async function saveProjectAs(): Promise<boolean> {
   const s = useEditor.getState()
   const path = await window.kadr.saveProjectDialog(s.project.name)
-  if (!path) return
-  await writeAndConfirm(path)
+  if (!path) return false
+  return writeAndConfirm(path)
 }
 
 async function openProject() {
@@ -83,6 +85,25 @@ export default function App() {
   // a fresh (empty) session isn't "unsaved work" yet
   useEffect(() => {
     if (useSaveUi.getState().savedProject === null) markProjectSaved(useEditor.getState().project)
+  }, [])
+  useEffect(() => {
+    const offClose = window.kadr.onCloseRequest(() => {
+      const saved = useSaveUi.getState().savedProject
+      const dirty = saved !== null && useEditor.getState().project !== saved
+      window.kadr.reportCloseState(dirty)
+    })
+    const offSave = window.kadr.onSaveBeforeCloseRequest(() => {
+      void saveProject()
+        .then((ok) => window.kadr.reportSaveBeforeClose(ok))
+        .catch((err) => {
+          console.error('[kadr] save before close failed', err)
+          window.kadr.reportSaveBeforeClose(false)
+        })
+    })
+    return () => {
+      offClose()
+      offSave()
+    }
   }, [])
   const dirty = savedProject !== null && project !== savedProject
   const undoLabel = useEditor((s) => s.past[s.past.length - 1]?.label)
