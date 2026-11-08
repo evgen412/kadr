@@ -1,9 +1,10 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { spawn, type ChildProcess } from 'child_process'
+import { rm, accessSync, constants as fsConstants } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
-import type { KadrApi, ExportProgress } from '@shared/types'
+import type { KadrApi, ExportProgress, CriticView } from '@shared/types'
 import { rawEncodeArgs } from '@shared/rawEncode'
+import { exportTempPath } from '@shared/exportTemp'
 
 // Direct export encoder: ffmpeg is spawned HERE, in the renderer process
 // (sandbox is off), so raw frames go straight from JS memory into its stdin
@@ -13,20 +14,38 @@ import { rawEncodeArgs } from '@shared/rawEncode'
 let rawEnc: ChildProcess | null = null
 let rawEncErr = ''
 let rawEncExit: Promise<void> | null = null
+/** the file the current direct encode writes — this module's own, so
+ *  rawEncodeDiscard can remove it without taking a path from anyone */
+let rawEncOut: string | null = null
+
+function killRawEncoder() {
+  try { rawEnc?.kill('SIGKILL') } catch { /* gone */ }
+  rawEnc = null
+  rawEncExit = null
+}
 
 // capability token for the kadr:// media protocol (issue #13). Sync on purpose:
 // fileUrl must work from the renderer's very first frame.
 const MEDIA_TOKEN: string = ipcRenderer.sendSync('media:token')
 
 const api: KadrApi = {
-  rawEncodeStart: (o) => {
-    const out = join(tmpdir(), `kadr-export-raw-${Date.now()}.mp4`)
+  rawEncodeStart: ({ outputPath, ...o }) => {
+    // next to the output, not in a tmpfs /tmp (shared/exportTemp.ts, kadr#17)
+    const out = exportTempPath(outputPath, 'raw', tmpdir(), (dir) => {
+      try { accessSync(dir, fsConstants.W_OK); return true } catch { return false }
+    })
+    rawEncOut = out
     const child = spawn(process.env.KADR_FFMPEG || 'ffmpeg', rawEncodeArgs({ ...o, out }), {
       stdio: ['pipe', 'ignore', 'pipe']
     })
     rawEnc = child
     rawEncErr = ''
     child.stderr!.on('data', (c) => { rawEncErr += c })
+    // a killed or crashed ffmpeg breaks its stdin (EPIPE). That failure
+    // reaches the export already — through the write callback and the exit
+    // code — but a stream with no 'error' listener ALSO throws it as an
+    // uncaught exception: one more failure in the log for every cancel (kadr#17)
+    child.stdin!.on('error', () => { /* reported by rawEncodeFrame / rawEncExit */ })
     rawEncExit = new Promise<void>((resolve, reject) => {
       child.on('close', (code) => {
         rawEnc = null
@@ -65,10 +84,16 @@ const api: KadrApi = {
     await rawEncExit
     rawEncExit = null
   },
-  rawEncodeKill: () => {
-    try { rawEnc?.kill('SIGKILL') } catch { /* gone */ }
-    rawEnc = null
-    rawEncExit = null
+  rawEncodeKill: () => killRawEncoder(),
+  // A cancelled or failed export used to leave its partial video in the temp
+  // folder — on a tmpfs /tmp that is RAM, held until reboot, one file per
+  // cancel. Only for a stream main has NOT taken over (exportUseVideo): after
+  // that, a failed mux keeps the file on purpose and names it to the user.
+  rawEncodeDiscard: () => {
+    const out = rawEncOut
+    rawEncOut = null
+    killRawEncoder()
+    if (out) rm(out, { force: true }, () => { /* nothing to remove */ })
   },
 
   openMediaDialog: () => ipcRenderer.invoke('media:open-dialog'),
@@ -135,6 +160,9 @@ const api: KadrApi = {
   measureLoudness: (path, start, duration) => ipcRenderer.invoke('media:loudness', path, start, duration),
   meanVolume: (path, start, duration) => ipcRenderer.invoke('media:mean-volume', path, start, duration),
   audioEnvelope: (req) => ipcRenderer.invoke('audio:envelope', req),
+  audioAnalyze: (req) => ipcRenderer.invoke('audio:analyze', req),
+  soundLibrary: (rescan) => ipcRenderer.invoke('sounds:library', !!rescan),
+  soundSetMeta: (id, meta) => ipcRenderer.invoke('sounds:set-meta', id, meta),
   onProxyProgress: (cb) => {
     const handler = (_e: unknown, p: { path: string; progress: number }) => cb(p)
     ipcRenderer.on('proxy:progress', handler)
@@ -162,6 +190,8 @@ const api: KadrApi = {
   fragmentCreate: (spec, projectDir) => ipcRenderer.invoke('fragment:create', spec, projectDir),
   fragmentDelete: (id) => ipcRenderer.invoke('fragment:delete', id),
   fragmentRelocate: (projectDir, ids) => ipcRenderer.invoke('fragment:relocate', projectDir, ids),
+  fragmentWriteFile: (id, name, content) => ipcRenderer.invoke('fragment:write-file', id, name, content),
+  fragmentParamsWrite: (id, patch) => ipcRenderer.invoke('fragment:params-write', id, patch),
   fragmentCaptureStart: (id, url, w, h, fps) =>
     ipcRenderer.invoke('fragment:capture-start', id, url, w, h, fps),
   fragmentCaptureStop: (id) => ipcRenderer.invoke('fragment:capture-stop', id),
@@ -172,7 +202,24 @@ const api: KadrApi = {
     ipcRenderer.on('fragment:frame', handler)
     return () => ipcRenderer.removeListener('fragment:frame', handler)
   },
+  fragmentTypecheck: (id) => ipcRenderer.invoke('fragment:typecheck', id),
+  probeBasic: (path) => ipcRenderer.invoke('media:probe-basic', path),
+  fragmentMedia: (path, projectDir, opts) => ipcRenderer.invoke('media:fragment-media', path, projectDir, opts),
+  fragmentInspect: (id) => ipcRenderer.invoke('fragment:inspect', id),
+  fragmentCollide: (id, step) => ipcRenderer.invoke('fragment:collide', id, step),
+  modelImport: (path, projectDir, opts) => ipcRenderer.invoke('model:import', path, projectDir, opts),
+  modelList: (projectDir) => ipcRenderer.invoke('model:list', projectDir),
+  fragmentCaptureResize: (id, w, h) => ipcRenderer.invoke('fragment:capture-resize', id, w, h),
+  onFragmentCaptureLog: (cb) => {
+    const handler = (_e: unknown, p: { id: string; level: 'error' | 'warn'; msg: string }) => cb(p)
+    ipcRenderer.on('fragment:capture-log', handler)
+    return () => ipcRenderer.removeListener('fragment:capture-log', handler)
+  },
   fragmentRender: (id, opts) => ipcRenderer.invoke('fragment:render', id, opts),
+  fragmentCancelRender: () => ipcRenderer.invoke('fragment:cancel-render'),
+  gpuGet: () => ipcRenderer.invoke('gpu:get'),
+  gpuSet: (pref: string) => ipcRenderer.invoke('gpu:set', pref),
+  gpuReport: (renderer: string) => ipcRenderer.invoke('gpu:report', renderer),
   onFragmentProgress: (cb) => {
     const handler = (_e: unknown, p: { id: string; phase: string; progress: number }) => cb(p)
     ipcRenderer.on('fragment:progress', handler)
@@ -232,6 +279,13 @@ const api: KadrApi = {
     const handler = (_e: unknown, code: number) => cb(code)
     ipcRenderer.on('claude:exit', handler)
     return () => ipcRenderer.removeListener('claude:exit', handler)
+  },
+
+  criticList: () => ipcRenderer.invoke('critic:list'),
+  onCriticChanged: (cb) => {
+    const handler = (_e: unknown, v: CriticView) => cb(v)
+    ipcRenderer.on('critic:changed', handler)
+    return () => ipcRenderer.removeListener('critic:changed', handler)
   }
 }
 

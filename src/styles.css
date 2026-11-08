@@ -65,6 +65,7 @@
   --c-fragment: #8b6cf0;
   --c-handle: #6fd3ff;        /* speed / extend grips */
   --c-mask: #ff8a5c;
+  --c-beat: #ff6fb5;           /* detected musical beats: 7.6:1 on the canvas */
 
   --clip-video: #2b3f63;
   --clip-video-2: #22334f;
@@ -104,6 +105,7 @@
   --rgb-handle: 111 211 255;
   --rgb-audio-level: 255 214 90;
   --rgb-mask: 220 60 60;
+  --rgb-beat: 255 111 181;
 
   /* --- fills that are one colour and nothing else ----------------------- */
   --c-on-solid: #ffffff;          /* text on a filled accent/danger button */
@@ -662,6 +664,8 @@ progress::-webkit-progress-value {
 }
 .bin-item:hover { border-color: var(--c-line-3); background: var(--c-bg-3); }
 .bin-item img { width: 100%; height: 68px; object-fit: cover; display: block; }
+/* a model's thumbnail is square — show all of it */
+.bin-item.model img { object-fit: contain; background: var(--c-bg-0); }
 .bin-audio {
   height: 68px;
   display: flex;
@@ -910,6 +914,16 @@ body.kadr-popout .preview {
   border-radius: var(--r2);
   max-width: 70%;
 }
+/* the onion skin (engine/onion.ts): above the fragments, under the gizmo it
+   is used with, and it never takes the mouse */
+.onion-skin {
+  position: absolute;
+  z-index: 6;
+  object-fit: contain;
+  pointer-events: none;
+}
+.onion-ctl { display: inline-flex; align-items: center; gap: var(--s2); }
+.onion-ctl input[type='range'] { width: 72px; }
 .frag-gizmo {
   position: absolute;
   border: 1px dashed var(--c-fragment);
@@ -949,6 +963,8 @@ body.kadr-popout .preview {
   cursor: pointer;
 }
 .tr-badge:hover { background: var(--c-accent-solid); color: var(--c-on-solid); }
+/* the second badge of a tile (next to transcription) */
+.tr-badge.frag-media-badge { left: calc(var(--s2) + 24px); }
 .texts-head {
   margin-top: var(--s2);
   border-top: 1px solid var(--c-line);
@@ -999,6 +1015,52 @@ body.kadr-popout .preview {
 }
 .text-speak:hover:not(:disabled) { background: var(--c-bg-3); color: var(--c-accent); }
 .tr-target { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.checks-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 46vh;
+  overflow: auto;
+  border: 1px solid var(--c-line);
+  border-radius: var(--r2);
+}
+.checks-list li + li { border-top: 1px solid var(--c-line); }
+.checks-list button {
+  display: flex;
+  gap: var(--s2);
+  align-items: flex-start;
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  color: var(--c-text);
+}
+.checks-list button:hover { background: var(--c-bg-3); }
+.checks-list li.warn svg { color: var(--c-warn); flex: none; margin-top: 2px; }
+.checks-list li.info button { color: var(--c-text-2); }
+.checks-list li.info svg { flex: none; margin-top: 2px; }
+/* the critic subagent's reviews, under the checks */
+.critic {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--c-line);
+}
+.critic-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0;
+  font-size: var(--fz-md);
+}
+.critic-chain { display: flex; flex-direction: column; gap: var(--s1); }
+.critic-head { display: flex; gap: var(--s3); align-items: baseline; flex-wrap: wrap; }
+.critic-span { font-family: var(--font-mono); }
+.critic-fix { display: block; margin-top: var(--s1); color: var(--c-text-2); }
+.critic-report { font-family: var(--font-mono); overflow-wrap: anywhere; }
 .tr-live {
   max-height: 64px;
   overflow: hidden;
@@ -1240,6 +1302,9 @@ div.tr-error {
 }
 .fx-del:hover:not(:disabled) { background: var(--c-danger-soft); color: var(--c-danger); }
 .fx-slider input[type='range'] { flex: 1; min-width: 60px; }
+/* fragment parameters: a slider with its exact value beside it */
+.fp-reload { margin-left: auto; display: inline-flex; }
+.fp-num input[type='number'] { width: 72px; }
 .fx-val {
   width: 40px;
   text-align: right;
@@ -1270,6 +1335,19 @@ div.tr-error {
 .tl-toolbar::-webkit-scrollbar { height: 0; }
 .tl-toolbar button { min-height: 24px; }
 .hint-inline { font-size: var(--fz-sm); color: var(--c-text-3); }
+/* the controls hint stays on ONE line: it used to wrap, and in a 1000–1100 px
+   window it made the toolbar 152 px tall in English and 222 px in Russian,
+   taken from the tracks — so switching the language moved the whole layout
+   (HelpFreedom/kadr#26). It shrinks first and ends in an ellipsis; the full
+   text is in its title. The buttons keep their size (the toolbar scrolls). */
+.tl-toolbar > * { flex-shrink: 0; }
+.tl-toolbar > .hint-inline {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .zoom-ctl {
   display: flex;
   align-items: center;
@@ -1311,6 +1389,21 @@ div.tr-error {
 }
 .tl-scroll::-webkit-scrollbar-corner { background: var(--c-scroll-track); }
 .tl-content { position: relative; }
+/* the overlays' layer (playhead, markers, beats, range): no size of its own */
+.tl-overlays { position: absolute; left: 0; top: 0; bottom: 0; width: 0; }
+/* a zoom gesture in progress: the drawn timeline is stretched about the anchor
+   (--zo, content px) by --zs, composited — the real zoom lands when it ends */
+.tl-content.zooming .lane,
+.tl-content.zooming .ruler {
+  transform: scaleX(var(--zs, 1));
+  transform-origin: calc(var(--zo, 0px) - var(--hw)) 0;
+  will-change: transform;
+}
+.tl-content.zooming .tl-overlays {
+  transform: scaleX(var(--zs, 1));
+  transform-origin: var(--zo, 0px) 0;
+  will-change: transform;
+}
 .tl-row { display: flex; border-bottom: 1px solid var(--c-line); }
 .tl-head {
   position: sticky;
@@ -1414,6 +1507,103 @@ div.tr-error {
   cursor: ew-resize;
   user-select: none;
   pointer-events: auto;
+}
+
+/* Detected beats: a thin line through every lane plus a tick on the ruler.
+   Passive like the markers' line — a drag aimed at a clip goes straight
+   through (pointer-events: none); they matter as SNAP targets, not as things to
+   grab. Accents are brighter and get the longer tick. */
+.tl-beat {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgb(var(--rgb-beat) / 0.22);
+  z-index: 1;
+  pointer-events: none;
+}
+.tl-beat::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -1px;
+  width: 3px;
+  height: 7px;
+  background: rgb(var(--rgb-beat) / 0.75);
+}
+.tl-beat.strong { background: rgb(var(--rgb-beat) / 0.5); }
+.tl-beat.strong::before { height: 12px; background: var(--c-beat); }
+/* the first beat of a bar (bar analysis): heavier, with its number on the ruler */
+.tl-beat.down { width: 2px; background: rgb(var(--rgb-beat) / 0.45); }
+.tl-beat.down::before { height: 14px; left: -1px; width: 4px; background: var(--c-beat); }
+.tl-bar-num {
+  position: absolute;
+  top: 1px;
+  left: 5px;
+  font-size: var(--fz-micro);
+  line-height: 1;
+  color: var(--c-beat);
+  white-space: nowrap;
+}
+/* sections of the song: a labelled band along the bottom of the ruler */
+.tl-section {
+  position: absolute;
+  top: 16px;
+  height: 11px;
+  border-left: 1px solid rgb(var(--rgb-beat) / 0.7);
+  background: rgb(var(--rgb-beat) / 0.1);
+  overflow: hidden;
+  z-index: 1;
+  /* passive, like beats and markers' lines: a drag on the ruler goes through */
+  pointer-events: none;
+}
+.tl-section span {
+  display: block;
+  padding-left: var(--s1);
+  font-size: var(--fz-micro);
+  line-height: 11px;
+  color: var(--c-text-2);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.tl-section.sec-chorus { background: rgb(var(--rgb-beat) / 0.28); }
+.tl-section.sec-chorus span { color: var(--c-text); }
+.tl-section.sec-build { background: linear-gradient(90deg, rgb(var(--rgb-beat) / 0.06), rgb(var(--rgb-beat) / 0.24)); }
+.tl-section.sec-break, .tl-section.sec-intro, .tl-section.sec-outro { background: rgb(var(--rgb-beat) / 0.05); }
+/* what a fragment declared it does (fragment.inspect events), along the
+   bottom of its lane — from the last «Проверка»; passive */
+.tl-event {
+  position: absolute;
+  bottom: 0;
+  width: 2px;
+  height: 6px;
+  margin-left: -1px;
+  background: var(--c-text-2);
+  pointer-events: none;
+  z-index: 3;
+}
+.tl-event.big { height: 12px; width: 3px; background: var(--c-text); }
+.tl-event-warn {
+  position: absolute;
+  bottom: 0;
+  height: 4px;
+  background: var(--c-warn);
+  pointer-events: none;
+  z-index: 3;
+}
+/* a pause in the music: a light hatch through every lane */
+.tl-pause {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: repeating-linear-gradient(135deg, rgb(var(--rgb-beat) / 0.16) 0 3px, transparent 3px 7px);
+}
+.tl-toolbar .beat-snap[aria-pressed="true"] {
+  color: var(--c-beat);
+  border-color: rgb(var(--rgb-beat) / 0.6);
+  background: rgb(var(--rgb-beat) / 0.12);
 }
 
 .playhead {
@@ -1949,6 +2139,9 @@ div.tr-error {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  /* the scrollbar's room is always kept, so the stage (sized from the
+     measured content width) cannot flip-flop as a scrollbar comes and goes */
+  scrollbar-gutter: stable;
   padding: var(--s4);
   gap: var(--s4);
 }
@@ -1966,7 +2159,14 @@ div.tr-error {
   background: var(--c-accent-soft);
   color: var(--c-accent-hi);
 }
-.link-toggle { white-space: nowrap; }
+.link-toggle {
+  white-space: nowrap;
+  /* the narrowest side panel (200 px) is narrower than the label: end it in
+     an ellipsis rather than scroll the editor sideways (the hint says it all) */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .link-toggle.on {
   background: var(--c-accent-solid);
   border-color: var(--c-accent-solid);
@@ -2198,7 +2398,10 @@ div.tr-error {
 
 .anim-values {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* two columns while both fit; in the narrow side panel a label with its
+     field («Позиция Y» + input, 130 px) does not, and two forced columns ran
+     80–122 px past the panel — one column there instead (kadr#26) */
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
   gap: var(--s2) var(--s4);
 }
 .anim-values label {
@@ -2222,6 +2425,7 @@ div.tr-error {
 }
 .mini-head {
   display: flex;
+  flex-wrap: wrap; /* its buttons wrap in the 200 px panel instead of scrolling it */
   align-items: center;
   gap: var(--s2);
   font-size: var(--fz-label);
@@ -2671,6 +2875,24 @@ div.tr-error {
   overflow: hidden;
 }
 .debug-head { cursor: default; }
+.gpu-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  padding: var(--s2) var(--s5);
+  border-bottom: 1px solid var(--c-line);
+  font-size: var(--fz-sm);
+}
+.gpu-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--c-text-2);
+}
+.gpu-note { color: var(--c-warn); }
 .log-body {
   flex: 1;
   min-height: 0;
@@ -2842,3 +3064,70 @@ div.tr-error {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---- «Звуки»: the bundled sound library ------------------------------- */
+.modal.sounds-dialog { width: 720px; }
+.snd-tabs { padding: 0; margin-bottom: var(--s2); }
+.snd-filters { display: flex; flex-direction: column; gap: var(--s2); }
+.snd-chips { display: flex; flex-wrap: wrap; gap: var(--s1); }
+.snd-chips .chip {
+  padding: 2px var(--s3);
+  border-radius: var(--r-full);
+  font-size: var(--fz-sm);
+}
+.snd-chips .chip.on {
+  color: var(--c-accent-hi);
+  border-color: var(--c-accent-line);
+  background: var(--c-accent-soft);
+}
+.snd-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s3);
+}
+.snd-filter-row input[type="search"] { flex: 1; min-width: 140px; }
+.snd-list {
+  max-height: 46vh;
+  overflow-y: auto;
+  border: 1px solid var(--c-line-2);
+  border-radius: var(--r2);
+  background: var(--c-bg-1);
+}
+.snd-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--s2);
+  padding: 3px var(--s2);
+  border-bottom: 1px solid var(--c-line);
+}
+.snd-row:last-child { border-bottom: none; }
+.snd-row:hover { background: var(--c-bg-2); }
+.snd-row .icon-only { width: 26px; height: 24px; }
+.snd-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.snd-row.music .snd-name { white-space: normal; }
+.snd-desc { display: block; font-size: var(--fz-sm); }
+.snd-dur { font-variant-numeric: tabular-nums; font-size: var(--fz-sm); }
+.snd-tags { display: flex; gap: var(--s1); justify-content: flex-end; flex-wrap: wrap; }
+.snd-tag {
+  padding: 0 var(--s2);
+  border-radius: var(--r-full);
+  border: 1px solid var(--c-line-2);
+  color: var(--c-text-2);
+  font-size: var(--fz-micro);
+  line-height: 16px;
+  white-space: nowrap;
+}
+.snd-tag.b-warm { color: var(--c-warn); border-color: rgb(var(--rgb-warn) / 0.4); }
+.snd-tag.b-bright { color: var(--c-handle); border-color: rgb(var(--rgb-handle) / 0.4); }
+.snd-tag.r-low { color: var(--c-ok); border-color: rgb(var(--rgb-ok) / 0.4); }
+.snd-tag.r-high { color: var(--c-danger-text); border-color: rgb(var(--rgb-danger) / 0.5); }
+.snd-credits { font-size: var(--fz-micro); }
+
+/* ---- «Реакция на звук» in the Inspector ------------------------------- */
+.ar-state { font-size: var(--fz-sm); }
+.ar-state.fresh { color: var(--c-ok); }
+.ar-state.stale { color: var(--c-warn); }
+.snd-tag.hit { color: var(--c-beat); border-color: rgb(var(--rgb-beat) / 0.45); }
+.snd-row.user .snd-name { color: var(--c-text); white-space: normal; }

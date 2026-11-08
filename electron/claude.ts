@@ -8,8 +8,9 @@ import { randomBytes } from 'crypto'
 import { execFile, spawn as spawnProcess } from 'child_process'
 import { promises as fs } from 'fs'
 import { join } from 'path'
-import { tmpdir } from 'os'
 import type { IPty } from 'node-pty'
+import { criticOp, criticTurn, criticNewSession, registerCriticIpc } from './critic'
+import { syncSkills } from './skillSync'
 
 // The session inherits this process's environment MINUS the markers of any
 // Claude session that launched the editor (see SESSION_MARKERS). Anything extra the
@@ -35,7 +36,13 @@ const SYSTEM_HINT =
   'If other MCP tools can fetch or download media (stock search etc.), files they save ' +
   'can go straight into this project: import via kadr_eval (probeMedia → addAsset → ' +
   'insertClipFromAsset) or copy them into a fragment folder for use inside Remotion ' +
-  'compositions.'
+  'compositions. ' +
+  'Kadr\'s skills compose: load kadr-editor, plus kadr-music when there is music, kadr-motion ' +
+  'for titles/captions/fragments and kadr-3d for 3D — whichever this project needs. Before a ' +
+  'bigger build, ask about style, rhythm, amount of text and sound, and show a plan; never ' +
+  'export unless asked. Before you show the user a finished visual block (a scene, titles, ' +
+  'captions, a promo), let the kadr-critic subagent judge its frames — see "The critic" in ' +
+  'kadr-editor: one review and one verification per stretch of timeline, then the user decides.'
 
 interface Session {
   pty: IPty
@@ -64,7 +71,9 @@ export async function sweepStaleSessions(): Promise<number> {
   const marks = [
     join(app.getPath('userData'), 'kadr-mcp.json'),
     join(app.getAppPath(), 'electron', 'mcp-bridge.cjs'),
-    join(tmpdir(), 'kadr-export'), // raw encoder + muxer temp files
+    // raw encoder + muxer temp files — next to the export's output now, in the
+    // temp folder only as a fallback (shared/exportTemp.ts), so by name
+    '/kadr-export-',
     join(app.getPath('userData'), 'proxies'),
     join(app.getPath('userData'), 'reversed'),
     join(app.getPath('userData'), 'decoded'),
@@ -147,14 +156,22 @@ async function evalInPage(win: BrowserWindow, code: string): Promise<string> {
  *   • rejecting anything that carries an Origin at all — only browsers set
  *     it, and the only legitimate client here is a node process.
  * The health check (GET /) stays open: mcp-bridge only needs *a* reply.
+ * Behind the same two locks: POST /critic (the critic's ledger, from the
+ * kadr_review_* tools) and POST /turn (the UserPromptSubmit hook).
  */
 function startBridge(
   win: BrowserWindow
 ): Promise<{ server: Server; port: number; token: string }> {
   const token = randomBytes(24).toString('hex')
+  const routes: Record<string, (body: Record<string, unknown>) => Promise<string>> = {
+    '/eval': (b) => evalInPage(win, String(b.code)),
+    '/critic': async (b) => JSON.stringify({ ok: await criticOp(b) }),
+    '/turn': async (b) => JSON.stringify({ ok: criticTurn(b) })
+  }
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
-      if (req.method !== 'POST' || req.url !== '/eval') {
+      const route = req.method === 'POST' ? routes[req.url ?? ''] : undefined
+      if (!route) {
         res.writeHead(404).end()
         return
       }
@@ -166,8 +183,7 @@ function startBridge(
       req.on('data', (c) => { body += c })
       req.on('end', async () => {
         try {
-          const { code } = JSON.parse(body)
-          const out = await evalInPage(win, String(code))
+          const out = await route(JSON.parse(body))
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(out)
         } catch (err) {
           res
@@ -194,7 +210,9 @@ function which(cmd: string): Promise<string | null> {
       })
       return
     }
-    execFile('/bin/sh', ['-c', `command -v ${cmd}`], (err, stdout) => {
+    // the name goes in as $1, never into the script: a command from
+    // claude-env.json with a space or a quote in it must not become shell
+    execFile('/bin/sh', ['-c', 'command -v "$1"', 'sh', cmd], (err, stdout) => {
       resolve(err ? null : stdout.trim() || null)
     })
   })
@@ -261,6 +279,65 @@ async function userConfig(): Promise<ClaudeConfig> {
   }
 }
 
+interface AgentDef {
+  description: string
+  prompt: string
+  tools?: string[]
+  model?: string
+}
+
+/**
+ * The session's own subagents, from electron/agents/*.md (front matter: name,
+ * description, tools as a comma list, model; the body is the prompt). Passed
+ * with --agents, so they exist in the editor's session only and nothing is
+ * written into ~/.claude/agents. A file that does not parse is skipped — the
+ * session must start without it rather than not at all.
+ */
+async function loadAgents(): Promise<Record<string, AgentDef>> {
+  const out: Record<string, AgentDef> = {}
+  const dir = join(app.getAppPath(), 'electron', 'agents')
+  let files: string[] = []
+  try { files = (await fs.readdir(dir)).filter((f) => f.endsWith('.md')).sort() } catch { return out }
+  for (const file of files) {
+    try {
+      const src = await fs.readFile(join(dir, file), 'utf8')
+      const m = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(src)
+      if (!m) throw new Error('no front matter')
+      const fm: Record<string, string> = {}
+      for (const line of m[1].split('\n')) {
+        const kv = /^([a-z]+):\s*(.*)$/.exec(line)
+        if (kv) fm[kv[1]] = kv[2].trim()
+      }
+      if (!/^[a-z0-9-]+$/.test(fm.name ?? '') || !fm.description) throw new Error('name or description missing')
+      const def: AgentDef = { description: fm.description, prompt: m[2].trim() }
+      if (fm.tools) def.tools = fm.tools.split(',').map((s) => s.trim()).filter(Boolean)
+      if (fm.model) def.model = fm.model
+      out[fm.name] = def
+    } catch (err) {
+      console.warn(`[claude] agent ${file} skipped:`, err)
+    }
+  }
+  return out
+}
+
+const shQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
+
+/**
+ * Settings for the session only: the UserPromptSubmit hook that tells the
+ * critic's ledger a turn began (electron/claude-hook.cjs; it prints nothing
+ * and always exits 0). The CLI merges these with the user's own settings.
+ */
+function sessionSettings(port: number, token: string): string {
+  const hook = join(app.getAppPath(), 'electron', 'claude-hook.cjs')
+  return JSON.stringify({
+    hooks: {
+      UserPromptSubmit: [{
+        hooks: [{ type: 'command', command: `node ${shQuote(hook)} ${port} ${token}`, timeout: 5 }]
+      }]
+    }
+  })
+}
+
 async function spawnSession(
   win: BrowserWindow,
   cols: number,
@@ -309,9 +386,14 @@ async function spawnSession(
     }, null, 1)
   )
 
+  // the critic's limits count per session: whatever the last one left open is over
+  criticNewSession()
+  const agents = await loadAgents()
   const args = cfg.args ?? [
     '--mcp-config', mcpCfgPath,
-    '--append-system-prompt', SYSTEM_HINT
+    '--append-system-prompt', SYSTEM_HINT,
+    ...(Object.keys(agents).length ? ['--agents', JSON.stringify(agents)] : []),
+    '--settings', sessionSettings(bridge.port, bridge.token)
   ]
   let dir = cwd || app.getPath('home')
   try { await fs.access(dir) } catch { dir = app.getPath('home') }
@@ -336,9 +418,9 @@ async function spawnSession(
         cols: Math.max(20, cols),
         rows: Math.max(5, rows),
         cwd: dir,
-        env: { ...process.env, ...cfg.env } as Record<string, string>
+        env: sessionEnv(cfg.env)
       })
-      : pty.spawn('/bin/bash', [
+      : pty.spawn('/bin/sh', [
         '-c',
         `(while kill -0 ${process.pid} 2>/dev/null; do sleep 3; done; ` +
         `kill -HUP -$$ 2>/dev/null; sleep 2; kill -9 -$$ 2>/dev/null) & exec "$0" "$@"`,
@@ -431,21 +513,28 @@ function closeSession(): Promise<void> {
 }
 
 /**
- * Keep the kadr-editor agent skill fresh in the user's skills directory —
- * the embedded claude discovers it from ~/.claude/skills. Scoped by its
- * description to sessions where the kadr_* MCP tools exist, so it stays
- * dormant in unrelated claude sessions and never collides with a separately
- * installed remotion skill (different name, hands composition authoring off).
+ * Keep Kadr's agent skills fresh in the user's skills directory — the
+ * embedded claude discovers them from ~/.claude/skills. They are COMPOSABLE:
+ * kadr-editor is the base (LOOK/ACT/VERIFY, the critic, fragments, voice, the
+ * interface), kadr-music, kadr-motion and kadr-3d carry the rules of particular
+ * kinds of work, and a project loads the ones it needs — a plain cut none of
+ * them, a product film to a song all three. (One file used to hold everything,
+ * and the rules of one project — 3D, bars — read as law in every other.)
+ * Scoped by their descriptions to sessions where the kadr_* tools exist, so
+ * they stay dormant in unrelated claude sessions.
+ *
+ * Each skill is a folder (SKILL.md + the reference files it links); what the
+ * sync may write or remove is spelled out in skillSync.ts.
  */
 async function syncSkill(): Promise<void> {
   try {
-    const src = await fs.readFile(join(app.getAppPath(), 'electron', 'kadr-skill.md'), 'utf8')
-    const dir = join(app.getPath('home'), '.claude', 'skills', 'kadr-editor')
-    const dst = join(dir, 'SKILL.md')
-    const cur = await fs.readFile(dst, 'utf8').catch(() => null)
-    if (cur === src) return
-    await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(dst, src)
+    const r = await syncSkills(
+      join(app.getAppPath(), 'electron', 'skills'),
+      join(app.getPath('home'), '.claude', 'skills'))
+    for (const s of r.skipped) console.warn(`[claude] skill ${s}: front matter name differs from its folder, or no managed mark — skipped`)
+    if (r.written.length || r.removed.length) {
+      console.log(`[claude] skills: wrote ${r.written.join(', ') || '—'}; removed ${r.removed.join(', ') || '—'}`)
+    }
   } catch (err) {
     console.warn('[claude] skill sync failed:', err)
   }
@@ -454,6 +543,7 @@ async function syncSkill(): Promise<void> {
 export function registerClaudeIpc(getWin: () => BrowserWindow | null) {
   void sweepStaleSessions() // leftovers from a hard-killed previous run
   void syncSkill()
+  registerCriticIpc(getWin)
   ipcMain.handle('claude:open', (_e, cols: number, rows: number, cwd: string | null) => {
     const win = getWin()
     if (!win) return { ok: false, error: 'no window' }

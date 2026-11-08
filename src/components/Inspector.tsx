@@ -1,10 +1,13 @@
-import { useEffect, useState } from 'react'
-import type { Anim, Clip, Effect, FxPreset, TextStyle } from '@shared/types'
+import { useEffect, useMemo, useState } from 'react'
+import type { Anim, Clip, Effect, FragmentInspect, FragmentParamDecl, FxPreset, TextStyle } from '@shared/types'
 import { useEditor, useFxPresets, findClip, uid } from '@/state/store'
 import { GLOW_DEFAULTS } from '@/gl/glow'
 import { useT } from '@/i18n'
+import { bakeAudio, bakeState, bakePlan } from '@/engine/audioReact'
+import { audibleTracksInRange } from '@/engine/subtitles'
+import { useFragmentParams, paramValues, setParam, resetParams, rememberParamValues } from '@/engine/fragmentParams'
 import { CtxMenu } from './CtxMenu'
-import { Icon } from './icons'
+import { Icon, Spinner } from './icons'
 
 function Num({
   label, value, step = 1, min, max, onChange
@@ -135,7 +138,159 @@ function ClipProps({ clip }: { clip: Clip }) {
         <input type="checkbox" checked={clip.muted}
           onChange={(e) => update({ muted: e.target.checked })} />
       </label>
+      {clip.kind === 'remotion' && <FragmentParamsSection clip={clip} />}
+      {clip.kind === 'remotion' && <AudioReactSection clip={clip} />}
       <EffectsSection clip={clip} />
+    </>
+  )
+}
+
+/**
+ * «Реакция на звук»: bake the sound under a fragment into its folder
+ * (audio.json + audio.ts, see src/engine/audioReact.ts) so the composition can
+ * move with the music. Shows whether the bake still matches what is under the
+ * clip — a moved clip or an edited track makes it stale.
+ */
+function AudioReactSection({ clip }: { clip: Clip }) {
+  const t = useT()
+  const project = useEditor((s) => s.project)
+  const [source, setSource] = useState(clip.audioBake?.source ?? 'mix')
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState('')
+  const [error, setError] = useState('')
+  useEffect(() => {
+    setSource(clip.audioBake?.source ?? 'mix')
+    setNote('')
+    setError('')
+  }, [clip.id])
+  const plan = useMemo(() => bakePlan(project, clip, 'mix'), [project, clip])
+  const tracks = useMemo(
+    // the tracks heard under the composition itself, not in the analysis context around it
+    () => (plan ? audibleTracksInRange(project, Math.max(0, plan.t0), plan.t0 + plan.frames * plan.step) : []),
+    [project, plan]
+  )
+  const state = bakeState(project, clip)
+  const src = source === 'mix' || tracks.some((tr) => tr.id === source) ? source : 'mix'
+
+  const bake = async () => {
+    setBusy(true)
+    setError('')
+    setNote('')
+    try {
+      const r = await bakeAudio(clip.id, { source: src })
+      setNote(r.audible
+        ? t('arDone').replace('{bpm}', r.bpm.toFixed(1)).replace('{n}', String(r.beats))
+        : t('arSilent'))
+    } catch (err) {
+      setError(String((err as Error)?.message ?? err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="insp-section"><Icon name="reactive" size={13} /> {t('arTitle')}</div>
+      <div className={`ar-state ${state}`} data-ar-state={state}>
+        {state === 'none' ? t('arNone') : state === 'fresh' ? t('arFresh') : t('arStale')}
+      </div>
+      <label className="insp-field">
+        <span>{t('arSource')}</span>
+        <select value={src} disabled={busy} onChange={(e) => setSource(e.target.value)} data-act="ar-source">
+          <option value="mix">{t('arMix')}</option>
+          {tracks.map((tr) => <option key={tr.id} value={tr.id}>{tr.name}</option>)}
+        </select>
+      </label>
+      <button data-act="ar-bake" disabled={busy} onClick={bake}>
+        {busy ? <Spinner /> : <Icon name="reactive" />}{' '}
+        {busy ? t('arWorking') : state === 'none' ? t('arBake') : t('arRebake')}
+      </button>
+      {note && <div className="dim">{note}</div>}
+      {error && <div className="tr-error"><Icon name="alert" size={15} /><span>{error}</span></div>}
+      <div className="dim ar-hint">{t('arHint')}</div>
+    </>
+  )
+}
+
+/**
+ * The fragment's own parameters (defineParams in @kadr/runtime): sliders that
+ * move the preview live and are saved into the fragment's params.json.
+ */
+function FragmentParamsSection({ clip }: { clip: Clip }) {
+  const t = useT()
+  const fid = clip.fragmentId!
+  const [ins, setIns] = useState<FragmentInspect | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [gen, setGen] = useState(0)
+  useFragmentParams((s) => s.live[fid]) // re-render while a value is dragged
+  useEffect(() => {
+    let alive = true
+    setLoading(true)
+    window.kadr.fragmentInspect(fid)
+      .then((r) => {
+        if (!alive) return
+        if (r.ok) rememberParamValues(fid, r.paramValues)
+        setIns(r)
+      })
+      .catch((e) => { if (alive) setIns({ ok: false, error: String((e as Error)?.message ?? e) }) })
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [fid, gen])
+  const decl: Record<string, FragmentParamDecl> = ins?.ok ? ins.params ?? {} : {}
+  const names = Object.keys(decl)
+  const values = paramValues(fid, decl, ins?.ok ? ins.paramValues : undefined)
+  const set = (k: string, v: number | boolean | string) => setParam(fid, k, v)
+  return (
+    <>
+      <div className="insp-section">
+        <Icon name="sliders" size={13} /> {t('fpTitle')}
+        <button className="fx-del fp-reload" data-act="fp-reload" aria-label={t('fpReload')} title={t('fpReload')}
+          disabled={loading} onClick={() => setGen((g) => g + 1)}>
+          {loading ? <Spinner /> : <Icon name="reload" size={13} />}
+        </button>
+      </div>
+      {ins && !ins.ok && <div className="tr-error"><Icon name="alert" size={15} /><span>{ins.error.split('\n')[0]}</span></div>}
+      {ins?.ok && !names.length && <div className="dim ar-hint">{t('fpNone')}</div>}
+      {names.map((k) => {
+        const d = decl[k]
+        const v = values[k]
+        const label = d.label || k
+        if (typeof d.value === 'boolean') {
+          return (
+            <label key={k} className="insp-field" data-param={k}>
+              <span>{label}</span>
+              <input type="checkbox" checked={v === true} onChange={(e) => set(k, e.target.checked)} />
+            </label>
+          )
+        }
+        if (typeof d.value === 'string') {
+          const color = /^#[0-9a-f]{6}$/i.test(String(d.value))
+          return (
+            <label key={k} className="insp-field" data-param={k}>
+              <span>{label}</span>
+              <input type={color ? 'color' : 'text'} value={String(v)} onChange={(e) => set(k, e.target.value)} />
+            </label>
+          )
+        }
+        const n = Number(v)
+        const step = d.step ?? (d.min != null && d.max != null ? (d.max - d.min) / 200 : 0.01)
+        const ranged = d.min != null && d.max != null && d.max > d.min
+        const digits = Math.max(0, Math.min(4, Math.ceil(-Math.log10(step) - 1e-9)))
+        return (
+          <label key={k} className="insp-field fx-slider fp-num" data-param={k}>
+            <span>{label}</span>
+            {ranged && (
+              <input type="range" value={n} min={d.min} max={d.max} step={step}
+                onChange={(e) => set(k, Number(e.target.value))} />
+            )}
+            <input type="number" value={Number(n.toFixed(digits))} step={step} min={d.min} max={d.max}
+              onChange={(e) => { const x = Number(e.target.value); if (e.target.value !== '' && Number.isFinite(x)) set(k, x) }} />
+          </label>
+        )
+      })}
+      {names.length > 0 && (
+        <button data-act="fp-reset" onClick={() => void resetParams(fid)}>{t('fpReset')}</button>
+      )}
     </>
   )
 }
@@ -281,7 +436,7 @@ function BlurControls({ clip, fx }: { clip: Clip; fx: Effect }) {
     st().updateClip(clip.id, {
       effects: (clip.effects ?? []).map((e) => (e.id === fx.id ? { ...e, ...patch } : e))
     })
-  const size = typeof fx.params.size === 'number' ? fx.params.size : 20
+  const size = typeof fx.params?.size === 'number' ? fx.params.size : 20
   return (
     <div className="fx-block">
       <div className="fx-head">
@@ -324,7 +479,7 @@ function GlowControls({ clip, fx }: { clip: Clip; fx: Effect }) {
   const setP = (key: string, v: number | string) =>
     patchFx({ params: { ...fx.params, [key]: v } })
   const num = (key: keyof typeof GLOW_DEFAULTS) => {
-    const v = fx.params[key]
+    const v = fx.params?.[key]
     return typeof v === 'number' ? v : (GLOW_DEFAULTS[key] as number)
   }
   return (

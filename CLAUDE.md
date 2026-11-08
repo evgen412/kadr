@@ -19,8 +19,57 @@ mixes audio and muxes/transcodes per preset.
 - Pure node checks — no app, no network:
   `node scripts/check-envelope.mjs` (loudness envelope),
   `check-ttstext.mjs` (text splitting), `check-proxy.mjs` (proxy choice),
-  `check-voicemap.mjs` (time remapping after a splice); plus
+  `check-voicemap.mjs` (time remapping after a splice),
+  `check-beats.mjs [resources/music]` (beat analysis; with the folder it is
+  compared beat for beat with librosa's own cues), and with ffmpeg
+  `check-limiter.mjs` (the export master limiter) and
+  `check-sfx-labels.mjs` (sound labels vs /brag's 228) and `check-hdr.mjs`
+  (the HDR → SDR maths and ffmpeg's own filter chain against the formula);
+  `check-models.mjs` (3MF build items/components/units, STL, OBJ, GLB,
+  decimation), `check-timeline.mjs` (the timeline's waveform columns and
+  overlap zones must EQUAL the slow code they replaced; edge tips never run
+  past their clip) and
+  `check-critic.mjs` (the critic's round limits — it must not loop),
+  `check-ttsmodels.mjs` (what each ElevenLabs model is sent),
+  `check-ffmpegflags.mjs` (the filter-file and frame-passthrough spellings per
+  ffmpeg release — `-fps_mode` from 5.1, `-vsync` before, which e2e52's decode
+  uses too — and a live run on the installed ffmpeg; the packed alpha's colour
+  step per release),
+  `check-packed-alpha.mjs` (the alpha matte round-trips exactly, the colour
+  within a level, on the installed ffmpeg), `check-audio-placement.mjs` (every
+  clip of the export mix on its sample, many runs over), `check-gain-keys.mjs`
+  (gain keyframes and speeds outside 0.25–8× in both mix paths),
+  `check-ozone.mjs` (whether the window will be a Wayland one),
+  `check-skills.mjs` (the agent skills' budget, triggers, links and the
+  numbers they share with the code; the skill sync on temp dirs); plus
   `<python3.11> scripts/check-phrases.py` for the phrase-boundary maths.
+  `node scripts/gen-sfx-catalog.mjs` regenerates
+  `resources/sfx/kadr-sfx.json` after a bundled sound or
+  `SFX_ANALYSIS_VERSION` changes.
+- e2e44 (beats, audio-reactive bake, sound library), e2e45 (fragment
+  preview stacking, hot reload of a late project-owned fragment), e2e46
+  (preview at cuts, snapshots of heavy 3D), e2e47 (project library, fonts,
+  render entry, typecheck), e2e48 (checks), e2e49 (3D import, kit,
+  collisions), e2e50 (fragment parameters, onion skin), e2e51 (bounded
+  preview pool, timeline culling, zoom gestures) and e2e52 (partial
+  fragment renders, every output frame checked by pixels; the export
+  decoder's first frame and backward jumps) and e2e53 (the critic: the
+  session's flags, the hook, review → verification → refusal over the real
+  MCP bridge, with a stand-in for claude — no API call), e2e54 (a failed mux
+  fails `done`; a cancel stops quietly and leaves nothing behind) and e2e56
+  (context-menu delete, a group dragged past 0, a cancelled drag) replace the
+  open project, so they REFUSE to run over one with clips unless
+  `KADR_E2E_FORCE=1`. e2e55 (a failed capture load, hidden windows on close)
+  CLOSES THE APP — start an instance for it alone.
+- `node scripts/skill-plan-test.mjs [--baseline] [--only <id>]` — the agent
+  skills' application test: a real claude, given only the working-tree skills
+  (`--setting-sources project`) and Skill/Read, plans four Kadr tasks; graded
+  on the skills it loads, the references it reads and the order of its steps.
+  COSTS Claude usage (≈ $0.9 a run on API pricing) — run it after changing a
+  skill, not routinely.
+- `node scripts/preview-bench.mjs <from> <to>` — plays a span of the open
+  project and reports editor frames, draws per fragment iframe, iframe
+  processes and the worst frame at every fragment cut. Plays sound.
 - `node scripts/gen-icons.mjs [dir]` — regenerate `src/components/icons.tsx`
   from lucide (see the header for the two-line fetch); never hand-edit the
   paths.
@@ -30,7 +79,8 @@ mixes audio and muxes/transcodes per preset.
 
 ## Requirements
 - Node.js ≥ 20, system `ffmpeg`/`ffprobe` in PATH
-- Optional: `python3` + `faster-whisper` (speech-to-text), the `claude`
+- Optional: `python3` + `faster-whisper` with `"av<19"` (speech-to-text;
+  faster-whisper 1.2.1 calls a PyAV argument that 19 removed), the `claude`
   CLI (embedded AI assistant), network access for the one-time Remotion
   workspace install
 - Optional for voice-over: an ElevenLabs API key (entered in the app,
@@ -67,13 +117,61 @@ mixes audio and muxes/transcodes per preset.
   considered and rejected: media lives wherever the user picked it, and a
   project loaded through `kadr_eval` never passes main at all, so the
   allowlist would have had holes exactly where a miss means a black preview. Startup sweeps leftover helper processes; shutdown force-exits
-  (window-all-closed → app.exit failsafe, render-process-gone → exit).
+  (window-all-closed → app.exit failsafe, render-process-gone → exit). The
+  editor window's `closed` destroys every hidden helper window (fragment
+  captures, inspect and collide pages): while one was open window-all-closed
+  never fired and a windowless process stayed alive. A capture whose page
+  fails to load is destroyed and unregistered, so the renderer's retry really
+  loads it (captureStart returns early for an id it holds).
 - `electron/ffmpeg.ts` — ffprobe probing (+ thumbnails + peak/RMS waveform
   bins), `makeProxy` (540p preview proxies), `makeReversed` (backwards
   render of a clip's source range, RAM-bounded chunks), `ExportMuxer`
-  (per-segment `volume,atempo*,afade,adelay,apad,atrim` → `amix` with
-  exact level compensation), `RawVideoEncoder` (fallback raw-frame
+  (per-segment `volume,atempo*,afade`, placed by a silence prefix, `apad,atrim`
+  → `amix` with exact level compensation), `RawVideoEncoder` (fallback raw-frame
   encoder; the primary one is spawned by the preload).
+  A CLIP IS PLACED BY SILENCE, NOT BY `adelay`: exactly round(start × 48000)
+  samples of `anullsrc` in front of it, joined with `concat`. On recent ffmpeg
+  (9.0.2 measured, 8.1 reported) adelay lost its delay — always for a clip run
+  through atempo, now and then for a plain one, with the same command — and
+  the clip played at 0:00. A KEYFRAMED GAIN is mixed as the preview plays it:
+  `gainCurve` (src/engine/anim.ts) turns it into points evaluated by evalAnim,
+  applied after atempo in 10 ms frames by one flat `volume` expression; a plain
+  gain keeps its scalar `volume` (the export used to take the value at the
+  clip's first instant). SPEED is exact: atempo was clamped to 0.25–8× while a
+  clip goes 0.02–100×, so a 20× clip's sound ran 2.5 times past the clip; a
+  stretched segment also reads 0.25 s more source for atempo to flush its last
+  window and is cut to its exact sample count. Onsets inside a stretched clip
+  still lead by up to ~half an atempo window (−13 ms at 2×) — atempo's own.
+  TWO LIMITS A BIG TIMELINE WALKS INTO, both met on a real 19-minute edit
+  carrying ~1000 SFX clips. One graph with N padded inputs costs the ffmpeg
+  scheduler roughly QUADRATICALLY in N: that mix ran at a quarter of realtime —
+  80 minutes of muxing for 19 minutes of video. Past `PREMIX_THRESHOLD` (64)
+  segments, `premixSegments` decodes each segment separately through the SAME
+  chain (`segmentChain`: volume, atempo, fades) to f32 PCM and sums it into one
+  buffer at its timeline offset — linear in total clip length instead of
+  quadratic in clip count — and the muxer then sees a single input. Levels are
+  identical by construction: amix divided every input by N and the following
+  `volume=N` undid it, so a plain sum lands in the same place. NB that buffer is
+  held whole in main: 48 kHz stereo f32 is ~23 MB per minute of timeline.
+  The other limit is argv: Linux caps ONE argument at 128 KB (MAX_ARG_STRLEN),
+  and that many clips build a `-filter_complex` past it — spawn failed with
+  E2BIG. The graph is written to a file and handed over from it on every
+  export rather than only the big ones — spelled `-/filter_complex <file>` on
+  ffmpeg ≥ 7 and `-filter_complex_script <file>` before (ffmpeg 9 no longer has
+  the old option, ffmpeg 6 and older lack the new one); `shared/ffmpegFlags.ts`
+  picks it from `ffmpeg -version`, asked once.
+  A FAILED MUX NO LONGER BINS THE VIDEO: the stream is rendered first and can
+  take hours, and the mux ran with that temp file scheduled for deletion in
+  `finally`. A non-cancelled failure that has video keeps it, and the error
+  message says where it is — and the caller HEARS the failure: `export:video-done`
+  returns it, so `startExport().done` rejects and kadr_export reports an error
+  (it used to resolve as if the file had been written).
+  THE INTERMEDIATES LIVE NEXT TO THE OUTPUT (`shared/exportTemp.ts`), not in
+  the temp folder: a tmpfs /tmp is RAM, and an intermediate is the size of the
+  export (300 MB a minute at the 4K preset). A folder that cannot be written
+  falls back to the temp folder. A cancel or a failure before main took the
+  direct encoder's stream over deletes it (`rawEncodeDiscard`); after that, a
+  failed mux keeps it on purpose.
 - `electron/claude.ts` — embedded Claude Code: node-pty PTY running the
   user's `claude` CLI inside a watchdog wrapper (kills its process group
   if Electron dies hard), per-session HTTP bridge (POST /eval →
@@ -101,10 +199,64 @@ mixes audio and muxes/transcodes per preset.
   send the request — and a flat refusal of any request carrying an `Origin`.
   The token reaches the MCP server as argv[3] of the generated config; the
   liveness ping on `GET /` stays open.
+  AGENT SKILLS are composable: each is a folder `electron/skills/<name>/`
+  (SKILL.md plus the reference files it links), synced at startup to
+  `~/.claude/skills/<name>/` by `electron/skillSync.ts` — `kadr-editor` (the
+  base: LOOK → ACT → VERIFY, the critic, fragments), `kadr-music`,
+  `kadr-motion`, `kadr-3d`, loaded as a project needs them (the system hint
+  says so); their rules are defaults. A SKILL'S BODY HAS A BUDGET: after a
+  compaction Claude Code re-attaches only the first ~5000 tokens of each
+  invoked skill (from a ~25 000-token pool), and kadr-editor had grown to
+  2859 words / 19 KB, so its tail — the interface table, the voice-over rules,
+  the recipes — was what an agent lost in a long session. Bodies stay under
+  2500 words and 12 000 bytes (Cyrillic costs about twice the bytes per
+  token); detail that only some tasks need lives in `references/*.md`, linked
+  one level deep from SKILL.md with the moment to read it. Descriptions say
+  WHEN ("Use when …", ≤ 500 chars). A number a skill shares with the code
+  (hold times, the beat window) and the critic's copy of the AI-template
+  tells are compared by check-skills, so one cannot drift from the other.
+  Every file carries a `<!-- managed by Kadr` mark. The sync writes changed
+  files, removes a marked file under a skill's SUBFOLDER that is no longer
+  shipped, never a top-level one (the user keeps SKILL.md.bak-<date> copies
+  there, marked too), removes a marked `kadr-*` folder that is no longer
+  shipped, and never touches an unmarked one (the user's own kadr-* skills).
+- THE CRITIC (`electron/agents/kadr-critic.md`, `shared/critic.ts`,
+  `electron/critic.ts`, `src/engine/critic.ts`) — a subagent that judges a
+  finished stretch of timeline from rendered frames and measurements only,
+  never from the author's intentions, and names at most the three worst
+  defects (time, evidence, one local fix). The author calls it before showing
+  a visual block (kadr-editor «The critic»). It exists in the editor's
+  session only: `electron/agents/*.md` go to claude as `--agents` JSON, nothing
+  is written to ~/.claude/agents. Its tools can only look — Read, kadr_state,
+  kadr_check and its own kadr_review_begin/frames/submit (not kadr_snapshot:
+  that imports into the bin); the PAGE chooses the frames it sees (both sides
+  of every cut, transition middles, declared captions settled, big events,
+  the first seconds, the poster, an even fill), so the author cannot show it
+  only the good ones, and lines declared events up against the sound clips.
+  IT MUST NOT LOOP, and that is enforced in code, not asked for in a prompt:
+  per stretch ONE review and ONE verification of exactly its defects (no new
+  ones), then refusal until the user writes; 12 rounds per user turn; a round
+  whose critic died may restart once; 60 frames per round. The LEDGER LIVES IN
+  MAIN — the page reloads and runs any JS through kadr_eval, so a limit kept
+  there would not be one. A user turn is heard from a UserPromptSubmit hook
+  (`electron/claude-hook.cjs`, passed with `--settings`; it prints nothing —
+  a hook's stdout joins the conversation — and always exits 0). TRAP, found by
+  running the real CLI: that hook ALSO fires when a background agent finishes,
+  with a `<task-notification>…</task-notification>` prompt; counted as a turn,
+  every critic that finished would reset its own limit. `isUserPrompt` takes a
+  prompt that is ONE element from first character to last as machine-made.
+  `/critic` and `/turn` sit behind the same token and Origin locks as /eval. A
+  custom `args` in claude-env.json replaces Kadr's flags, so there is no critic
+  and no hook — the limits then only tighten (no turn ever opens). Findings
+  show in «Проверка» and, for a saved project, as a markdown report with its
+  contact sheets in `<projectDir>/kadr-reviews/`.
 - `electron/mcp-bridge.cjs` — MCP stdio server (SDK) that claude receives
   via a generated `--mcp-config`; tools: kadr_state / kadr_eval /
-  kadr_snapshot / kadr_export / kadr_transcribe / kadr_fragment_create /
-  kadr_neon_wave.
+  kadr_snapshot / kadr_sheet / kadr_export / kadr_transcribe /
+  kadr_fragment_create / kadr_typecheck / kadr_check / kadr_fragment_media /
+  kadr_model_import / kadr_models / kadr_neon_wave / kadr_beats /
+  kadr_audio_react / kadr_sounds / kadr_sound_add / kadr_sound_label /
+  kadr_voice_*.
 - `electron/transcribe.ts` + `scripts/transcribe.py` — faster-whisper
   runner (VAD, anti-hallucination thresholds and post-filters, NDJSON
   segments with word timestamps); audio comes from an ExportMuxer mixdown
@@ -120,6 +272,53 @@ mixes audio and muxes/transcodes per preset.
   with sc = 1/(1+max k), d = 1/(1+√(1−4k·r²)), per-channel k for
   dispersion). Empty segments short-circuit to zeros — ExportMuxer with
   no inputs builds an ffmpeg command without any `-i` and fails.
+- MUSIC — beats, audio-reactive fragments, the sound library (taken over
+  from /brag, latent-spaces/brag; bundled media and licences in
+  `resources/`, see `resources/CREDITS.md`).
+  `shared/audioAnalysis.ts` ports librosa 0.11's `beat_track` (onset
+  strength over 128 Slaney mel bands, autocorrelation tempogram with a
+  log-normal prior at 120 BPM, Ellis' DP, the 0.11 trim rule) and matches it
+  beat for beat on the bundled tracks. Traps encoded in check-beats: librosa
+  0.10 and 0.11 trim differently, `np.hanning(5)` is symmetric while
+  `get_window('hann', 5)` is periodic, Python's `round` is half-to-even, and
+  the onset envelope is shifted by 3 frames on purpose. Analysis runs at
+  44.1 kHz: at 22.05 the tempo is quantised too coarsely to report right.
+  THE GRID IS MOVED ONTO THE ATTACKS when librosa's is systematically off
+  (`alignBeatsToAttacks`): on a brickwalled track whose 808 starts out of a
+  sidechain gap, the onset-strength peak comes when the note is already
+  sounding, and every beat sat ~110 ms after the bass. The analyser keeps
+  1 ms energy envelopes (< 150 Hz and full band); per beat the attack is the
+  steepest rise in [−180, +60] ms at −6 dB of the level it rises to; the grid
+  moves only when ≥ 60 % of beats have one, their IQR ≤ 50 ms and the median
+  is beyond 25 ms. On the bundled tracks nothing moves, so the parity holds;
+  `analyzeBeats(a, { alignAttacks: false })` is the raw grid. Traps: a 5 ms
+  RMS of a 50 Hz note dips at every zero crossing (the low band needs
+  ≥ 20 ms), a smoothed envelope needs a rise span as wide as its window, and
+  a centred window of width W crosses −6 dB of a step W/4 early. Not fixed by
+  it: places where the tracker loses its phase outright.
+  Beats are markers (`TimelineMarker.kind = 'beat'`) drawn as thin lines;
+  `snapPoints` includes every marker (beats unless the magnet is off,
+  `useSettings.snapBeats`) and takes marker ids in `exclude`.
+  `src/engine/audioReact.ts` bakes the sound under a fragment into
+  `audio.json` + `audio.ts` in its folder (per composition frame; τ plays at
+  `clip.start + (τ − inPoint)/speed`; ±8 s of context for a steady tempo);
+  `clip.audioBake.hash` makes the Inspector say stale, and the exporter
+  re-bakes stale ones before rendering.
+  `electron/sounds.ts` + `shared/sfxFeatures.ts`: the library. Labels were
+  REVERSE-ENGINEERED from /brag's published ones (magnitude share in
+  4–16 kHz, frames within 18 dB of the loudest; depth-2 trees agree
+  96–99 %); inputs must be the channel MEAN (ffmpeg `-ac 1` scales stereo by
+  √2). A sound's HIT (attack of its loudest event) is what `addSound` puts
+  on the beat; a sound with no single event gets hit 0. The user's own
+  sounds live in `userData/sfx/<family>/`, analysed once and cached by
+  size+mtime+`SFX_ANALYSIS_VERSION`. `placeAudio` picks an audio track FREE
+  over the whole span (overlap on one track would crossfade the music).
+- `shared/audioMaster.ts` — the export master limiter: the mix used to reach
+  the encoder over full scale. alimiter at −1 dBFS; ffmpeg 4.3's alimiter
+  delays by its look-ahead (239 samples at 48 kHz / 5 ms) and never flushes
+  it, so the chain pads 239 samples in front and trims them after — bit
+  identical and the same length below the limit. Analysis mixdowns pass
+  `master: false`.
 - `electron/fragments.ts` — Remotion workspace (`~/kadr-fragments`):
   scaffold, vite dev server (watchdogged), fragment create/delete,
   `remotion render` once per content hash at near-lossless settings
@@ -137,11 +336,87 @@ mixes audio and muxes/transcodes per preset.
   transparent one, since a short WebM parses fine and just ends early.
   `sweepPartFiles` drops leftover sidecars at startup: nothing is building
   then, so any that exist are corpses.
+  Progress parses both remotion phases, "Rendered N/M" and "Stitched N/M"
+  (older versions say "Encoded"), on a bounded tail of the output: the
+  second phase used to be invisible, and a heavy transparent fragment sat
+  on one number for many minutes. `cancelFragmentRenders` (IPC
+  `fragment:cancel-render`, also called on quit and by the export's cancel)
+  SIGKILLs a snapshot of the whole process TREE — remotion starts Chrome in
+  a process group of its own, and on SIGTERM it launched a fresh Chrome that
+  was reparented to init and stayed — then removes the render's
+  `react-motion-render*` frame dir. Content trap: per-frame random noise
+  (film grain) in a transparent fragment makes every PNG and VP9 frame
+  incompressible (measured 119 MB / 144 s vs 3.6 MB / 40 s for 120 frames);
+  put grain on its own track as a short looped RGBA clip. Speed note:
+  remotion stitches with libvpx-vp9 and no speed flags; `-row-mt 1` is ON
+  (the managed config, chained after the user's own override via
+  ConfigInternals; `KADR_VP9_ROW_MT=0` turns it off). It is NOT
+  bit-identical — frames differ from a plain encode at ~54–58 dB — but both
+  are equally close to the lossless frames (colour 55.72 vs 55.73 dB, alpha
+  62.33 vs 62.34), and the speed-up is content-dependent (10–80 %).
+  Preview stacking: fragment iframes sit OVER the GL canvas, so they are
+  appended bottom track first, and `fragmentNeedsCapture(track, clip,
+  project)` sends a fragment through pixel capture whenever something
+  GL-drawn overlaps it in time on a track above — otherwise an opaque
+  fragment on a low track hid every ordinary clip over it (the export was
+  always right). Hot reload: chokidar does not follow a symlinked folder
+  that appears after the dev server started (every fragment created in a
+  saved project), so the generated vite config carries
+  `followProjectFragments`, which watches the real folders and replays their
+  events on the symlinked path — and re-watches a folder deleted and created
+  again at the same path (the watch dies with the folder; the inode is not
+  a reliable sign — tmpfs reuses it — so it asks chokidar's `getWatched()`).
+  The dev server outlives app restarts; when Kadr's vite.config template
+  changes, the running server restarts itself, so `ensureServer` waits while
+  the port is taken, adopts a server that won the race, and serializes
+  starts (probing once used to spawn a second vite that died on «port in
+  use»).
+  PREVIEW SPEED (a project of eight heavy three.js fragments): each fragment
+  page loads ONLY its fragment (`src/fragments/lazy.ts`; the page imported
+  the whole registry — every fragment of the workspace — before), runs in a
+  process of its own (`f<slot>.localhost`: each is a site, hence a process;
+  the lowest free slot, so the incoming and outgoing pages never share a
+  main thread), draws its ThreeCanvas on DEMAND at the displayed size (a
+  vite-only shim `src/_kadr/three-preview.tsx`; `remotion render` never
+  sees it), parks at opacity 0.001 (not visibility:hidden — bringing a
+  page back cost ~100–250 ms of nothing), shares one page across butt-joined
+  clips that continue each other, and follows the clock through a store
+  subscription. Measured: the next fragment's first frame 2.3 s → 42–76 ms,
+  a page's heap 380 → 62 MB. Capture windows reconcile one pass at a time
+  and close on a reload of the editor page.
+  READINESS: `window.__kadrDrawn` is the frame really on the page (no
+  pending delayRender, every canvas drew it, two rAFs); the page runs one
+  empty delayRender/continueRender pair at boot (`remotion_renderReady`
+  stays false otherwise), honours a leaked delayRender for 1.5 s only, and
+  the frame a snapshot waits for is clamped to the composition.
+  PROJECT LIBRARY: `<project>/kadr-lib` is `'@lib/…'` for every fragment
+  of a saved project (vite and webpack resolve by the importer's realpath);
+  `'@kadr/runtime'` (fonts, `defineInspect`, `defineParams`) and
+  `'@kadr/three'` (the 3D kit) are managed files from
+  `electron/fragment-kit/`. Fonts in kadr-lib/fonts are registered by the
+  page and the render entry, never by a component. Renders go through ONE
+  entry (`src/_entries/current.tsx`, rewritten inside the render queue)
+  and one managed `kadr.remotion.config.ts` — webpack names its cache
+  after the whole config, and an entry per fragment grew that cache to
+  gigabytes. `fragmentHash` walks kadr-lib and `src/_kadr` only when the
+  sources import them. The workspace's package.json/tsconfig are merged and
+  missing deps installed on start. `kadr_typecheck` checks one fragment.
+  PARAMETERS: `defineParams`/`useParams`; the Inspector posts LIVE values to
+  every page of the fragment and, after 400 ms of quiet, main MERGES only
+  the moved values into `params.json` as it is on disk (an edit by hand in
+  between survives); the dev server announces a params.json change from the
+  WATCHER (a created file never reaches handleHotUpdate) and pages reload
+  the values, not themselves; the render entry imports the file.
 - `src/state/store.ts` — zustand store. Undo convention: callers invoke
   `pushHistory(labelKey)` once before a discrete edit; high-level actions
   push their own. `sanitizeProject` heals foreign/script-written projects
-  on load (scalar Anims → {value}, broken keyframes dropped, missing
-  fields defaulted). File-backed preset stores (pose/fx) via user-store IPC.
+  on load (scalar Anims → {value}, broken keyframes dropped, an unknown
+  easing made linear — evalAnim eases anything it does not know linearly, it
+  used to throw and black the whole frame — effects without an id or a type
+  dropped and `params` defaulted (`sanitizeEffects`, also on every
+  `updateClip` that carries effects: a missing `params` blanked the whole
+  window), missing fields defaulted). File-backed preset stores (pose/fx)
+  via user-store IPC.
   `insertClipsFromAssets` lays several assets back-to-back in one undo
   (audio → audio track, AV twins as usual); `removeAssets` drops bin
   entries AND every clip using them (one undo); `setClipSpeed` rescales
@@ -191,6 +466,42 @@ mixes audio and muxes/transcodes per preset.
   clock, ~4 fps idle when paused; the tick is exception-proof — one bad
   frame never kills playback; element resync never reseeks mid-seek and
   aims ahead by 0.08×speed so software decode can't storm).
+  The pool keeps elements only for clips around the playhead
+  (`clipsAround`: starting within 8 s, ended within 3 s), and `release`
+  disconnects an element's WebAudio source and gain (`detachAudio`). It
+  used to keep one for every clip ever touched, wired into the graph for
+  good: a 19-minute, 1080-audio-clip project ended its playthrough with
+  1080 routed sources, a median frame of 23 ms instead of 7, and 33–53
+  corrective seeks (each a gap you hear) per 30 s — 169 in all; after: 7,
+  pool ≤ 15. `previewPoolStats()`, `audioStats()` (with
+  AudioContext.playbackStats) and `silencePreview(on)` on kadrEditor are
+  there to measure it.
+- `src/components/Timeline.tsx` + `src/engine/timelineMath.ts` — on big
+  projects: clips culled to the view ± half a screen (plus the selection)
+  once the content is longer than 4 screens; `ClipView` is memo'd and gets
+  its visible slice (a constant pair when off screen); a clip under 6 px is
+  one element; clip geometry is `calc(var(--z) * N px)` so a zoom is a
+  style change, with zoom-dependent decisions following a settled zoom; the
+  visible seconds are derived from the scroll PIXELS in render. Zoom
+  gestures (wheel, slider) only scale the drawn lanes, ruler and
+  `.tl-overlays` about the anchor and commit once the gesture pauses (or
+  stretches past 0.5–2×, or on any pointerdown), keeping the anchor time
+  across chained commits. Waveform columns are sliding-window maxima,
+  k chosen per pixel — EXACTLY the old full scan (a merged-bin pyramid
+  smeared lone clicks and was rejected); overlap zones are one sweep.
+  Measured and rejected: CPU rasterisation (faster timeline, worse preview
+  and export), software waveform canvases, dropping clip decorations.
+  EDGE TIPS run as long as `tipSpans` says: their stored lengths when they
+  fit, shared in proportion when a clip is shorter than both together (a
+  beat edit's 0.3 s clips) — the in tip used to win, so the out tip started
+  mid-move or never played. edgeAt, the strips and the critic's frame plan
+  all read it. A GROUP stops when its earliest clip reaches 0 (clamped one by
+  one, it piled up there); the clip menu's Delete acts on the selection it
+  was opened on; every drag in the editor also ends on `pointercancel`.
+  The controls hint in the toolbar is one line that ends in an ellipsis
+  (wrapping, it made the toolbar 152–222 px tall in a narrow window and moved
+  the layout on a language switch); the motion editors size their stage from
+  the measured content width and keep the scrollbar's gutter.
 - `src/gl/compositor.ts` — WebGL2 quad compositor: perspective-correct 3D,
   masks (crop + up to 8 shapes), transition FBOs, motion-blur accumulator,
   glow + gaussian-blur effect passes (`drawLayerFx`), raw-BGRA capture
@@ -237,10 +548,25 @@ mixes audio and muxes/transcodes per preset.
     `Mp4FrameSource` re-wraps the frames as BT.709 on the CPU: a tagged
     frame goes through Chromium's colour-managed upload, which rewrites
     mid-tones and would lift the matte (128 → 143). `KADR_DISABLE_ALPHA_PACK`
-    forces the old path.
+    forces the old path. Two traps on ffmpeg ≥ 8, both measured: gray →
+    yuv420p already lands in limited range, so the matte's range is mapped
+    BEFORE the pixel format (after it, opaque 255 packed as 217 and every
+    transparent fragment let ~8 % of the layer under it through); and
+    swscale's matrix change is off by up to 2.5 levels (grey went green-ish),
+    so from 8 on `colormatrix` does it (`packedColourChain`). The cache key
+    carries `:p2` so old packs are rebuilt.
   * MOOV AT THE END (any file not written with faststart) is picked up by
     fetching the file's tail (`pumpTail`) instead of dropping to element
     seeks.
+  * A SEEK MUST DROP mp4box's HALF-COLLECTED BATCH: mp4box keeps the
+    samples it was gathering towards the next `nbSamples` callback across
+    `seek()` and sends them FIRST. Init's `jump(0)` met that whenever the
+    head pump had already extracted a batch — on light files (flat
+    graphics, small renders) always. Either the fresh decoder got a later
+    keyframe first and showed that frame for the clip's first request, or
+    it got a delta («A key frame is required»), `open()` returned null and
+    the clip silently exported through element seeks. `jump()` clears the
+    track's `extractedTracks[].samples` after the seek. Test: e2e52.
   * A STATIC SHUTTER collapses: `frameSignature` records what drawFrame
     would draw without touching the GPU, and when every motion-blur
     sub-sample matches, one draw stands in for eight — exact, and
@@ -283,6 +609,28 @@ mixes audio and muxes/transcodes per preset.
   NOT reach this conversion (the scale filter's own `flags` default wins),
   so an A/B on those flags that compares output bytes proves nothing, and
   filter threading is already on by default.
+  ONLY THE FRAMES THE EDIT USES: a film cut as windows of one continuous
+  composition (every scene a fragment whose clip starts at inPoint = its
+  place in the film) used to render each fragment from frame 0 to its end —
+  measured on a 26-minute film, 1.6 million frames for the 93 thousand the
+  edit shows, about 35 hours. `fragmentRenderJobs` (exporter.ts) groups the
+  clips of a fragment by the composition seconds they show (±
+  `FRAGMENT_RANGE_MARGIN` 0.5 s for the shutter, blending and rounding;
+  clips more than `FRAGMENT_RANGE_GAP` 10 s apart get files of their own),
+  main renders `--frames=f0-f1` into `<base>-r<f0>-<f1>.<ext>` and answers
+  `start` (the clips' inPoint moves back by it). Frames are absolute, so the
+  fragment draws exactly what a full render drew; a clip looping past the
+  end is clamped to the last frame, so its loop span is unchanged; a full
+  render already on disk is always taken first. The asset's duration is the
+  PICTURE's (frames / fps): remotion's silent audio runs up to ~60 ms past
+  the last frame, and a looping clip held its last frame that long.
+  Test: e2e52.
+  ONE EXPORT AT A TIME: the preload's raw encoder is a single global ffmpeg
+  and main's export state and the fragment render queue are shared, so an
+  export started while another ran (a script's `startExport` plus the
+  dialog's) fed its frames into the other's encoder — both died at 100 %
+  («write after end» / «write ECANCELED»), and the second one looked frozen
+  until then. `startExport` refuses while `activity.exporting` is set.
 - `src/engine/subtitles.ts` / `captions.ts` — SRT parse/serialize,
   word-precise cue splitting (`segmentsToRichCues`), auto-captions
   fragment generator.
@@ -291,6 +639,52 @@ mixes audio and muxes/transcodes per preset.
   and the hybrid preview: iframe overlay by default, automatic pixel
   capture when the clip carries GL-only features (effects/3D/masks/
   transitions).
+- RHYTHM (`shared/rhythm.ts`, on top of the librosa port): the meter and the
+  "one" (kick + bass + harmonic change − backbeat snare), sections from
+  self-similarity plus loudness jumps, pauses as relative dips that do not
+  repeat every bar, the kick offset. Markers `kind: 'beat'|'section'|'pause'`;
+  bakes take bars and sections from a 60 s context and give fragments
+  `useAccent/accentAt/breathAt/sectionAt/bars/pauses`.
+- CHECKS (`src/engine/checks.ts`, «Проверка», `kadr_check`): fragments
+  declare `inspect` (events, texts, camera, continuous); a hidden `?inspect=1`
+  page samples it at 30 Hz. Thresholds are named constants (`CHECK_LIMITS`);
+  camera jerks are speed STEPS against the local peak (raw acceleration
+  flagged accepted cameras) on samples kept to 1e-6. Contrast and seams read
+  real pixels; collisions play the fragment frame by frame (`?collide=1`)
+  and test the kit's parts with three-mesh-bvh (both geometries need an
+  index).
+- 3D (`electron/models.ts` → `kadr-lib/models`): STL, 3MF (build items,
+  components in other package files, units — without them a 150 mm part
+  came out 2 mm), OBJ, glTF, STEP via occt-import-js; Z-up → Y-up, welding,
+  meshoptimizer decimation, an OBB per part, GLB in metres, a thumbnail
+  drawn in software. The kit's `useModel` takes one delayRender per model,
+  tied to the load.
+- HDR AND ROTATION (`shared/hdr.ts` + `electron/hdr.ts`): a 33³ LUT between
+  two swscale matrix conversions (no zscale in older ffmpeg): the transfer's
+  inverse and OOTF, an extended-Reinhard shoulder with a 1000-nit peak at 1,
+  BT.2020 → BT.709 towards the colour's own luminance (keeps the hue), BT.709
+  OETF. Two faults `check-hdr` found in the first curve: an exponential
+  shoulder that flattened every highlight above 1.3× reference white, and the
+  shoulder applied before the primaries (warm colours clipped towards
+  yellow). `HDR_VERSION` is in the LUT name and every tone-mapped cache key.
+  Rotated or HDR sources reach the export through an ffmpeg intermediate,
+  decided BEFORE the fast decode path.
+- `electron/gpu.ts` — which GPU Chromium renders on (auto / discrete /
+  integrated, a row in the session log). The EGL vendor variable must be in
+  the environment before Electron starts (the GPU process forks from the
+  zygote). On a hybrid laptop the discrete card measured SLOWER for the
+  preview (every frame is copied to the integrated card to be shown), so
+  'auto' keeps the default. NOT UNDER WAYLAND: there Chromium itself talks to
+  the compositor through EGL, NVIDIA's EGL cannot import the Intel card's
+  buffers (`eglCreateImage failed with 0x3004`), the GPU process dies over and
+  over and the window stays black — so the variable is set, and the card
+  offered, for an X11 window only (`shared/ozone.ts`; `--ozone-platform=x11`
+  brings it back). Measured here on a Wayland session: black before, Intel
+  after; X11 + discrete still renders on the NVIDIA card.
+- The onion skin (`src/engine/onion.ts`, `OnionSkin.tsx`): a footage clip as
+  a `<video>` over the preview, translucent or in difference mode, never in
+  snapshots or exports; selecting a fragment (to drag its sliders) does not
+  steal it.
 - `src/engine/autosave.ts` — 5-minute autosave with `activity` flags
   (paused during export and Claude sessions).
 - `src/engine/chime.ts` — short WebAudio two-note signal when a render
@@ -316,6 +710,20 @@ mixes audio and muxes/transcodes per preset.
   channel and cost exactly 3.01 dB through ffmpeg's downmix matrix.
   `KADR_TTS_MOCK=1` synthesises speech-shaped audio locally so tests never
   spend credits.
+  MODELS (`shared/ttsModels.ts`): Eleven v4 and v4 Turbo next to Flash v2.5 and
+  Multilingual v2. The docs say v4 needs the Text to Dialogue API and v4 Turbo
+  its WebSocket; the LIVE API (2026-10-20) serves both on the plain
+  /v1/text-to-speech (+ /with-timestamps), with 400-character context,
+  previous_request_ids and seed — the history item names the model that ran,
+  check there before believing a doc. v4 takes stability and similarity only
+  (style/speed/speaker boost are dropped silently, so they are not sent and
+  their sliders hide) and is cut at 2 000 characters per request (ElevenLabs'
+  own reliability guidance; the cap is 10 000). The older models are sent and
+  cut exactly as before. A SESSION STARTS WITH THE MODEL OF THE LAST VOICE-OVER
+  that landed (`lastModelId`, applied where settings load — never in the
+  sanitizer, which runs on every update). A regeneration uses the RUN's own
+  voice, model and settings, like its tempo: a patch from another model would
+  change the voice mid-file.
 - `shared/proxy.ts` — which proxy the API calls use, and how to spell it
   for Chromium (`https=host:port;http=host:port`, or a full `socks5://`).
   `net.fetch` always uses the DEFAULT session, whose proxy Chromium picks
@@ -424,6 +832,11 @@ each of them has been destroyed by a test at least once.
 
 ## Conventions
 - All timeline math in seconds; keyframe times are clip-local.
+- Profiling over CDP: sample at ≥ 1 ms and never kill the profiling client
+  mid-run. A 200 µs profile whose client died left V8's sampler signalling
+  the main thread, and a large shared-memory allocation (a project with its
+  waveforms, sent to main for an autosave) was interrupted and restarted
+  forever — the editor froze in one syscall. Frame timing needs no profiler.
 - Mutations never auto-push history; see the store convention above.
 - `electron-vite dev` does NOT hot-restart the main process — main/preload
   edits need a full app restart.

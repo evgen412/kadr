@@ -40,7 +40,9 @@ const MAP = {
   transition: 'blend', junction: 'git-commit-horizontal',
   gauge: 'gauge', grip: 'grip-vertical', language: 'languages',
   popout: 'picture-in-picture-2', popin: 'picture-in-picture',
-  alert: 'triangle-alert'
+  alert: 'triangle-alert',
+  beat: 'metronome', sfx: 'bell-ring', reactive: 'activity',
+  sliders: 'sliders-horizontal', onion: 'layers-2'
 }
 
 const body = (file) => {
